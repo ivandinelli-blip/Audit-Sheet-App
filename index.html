@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Employee Audit Tool</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback, useMemo } = React;
+
+    const STATUS_COLORS = {
+      critical: 'bg-red-100 text-red-800 border-red-200',
+      warning: 'bg-amber-100 text-amber-800 border-amber-200',
+      success: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+      neutral: 'bg-slate-100 text-slate-700 border-slate-200'
+    };
+
+    const FileDropZone = ({ label, file, onDrop, icon, accepted }) => {
+      const [isDragging, setIsDragging] = useState(false);
+
+      const handleDrag = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, []);
+
+      const handleDragIn = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(true);
+      }, []);
+
+      const handleDragOut = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
+      }, []);
+
+      const handleDrop = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+          onDrop(files[0]);
+        }
+      }, [onDrop]);
+
+      const handleFileInput = (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          onDrop(e.target.files[0]);
+        }
+      };
+
+      return (
+        <div
+          onDragEnter={handleDragIn}
+          onDragLeave={handleDragOut}
+          onDragOver={handleDrag}
+          onDrop={handleDrop}
+          className={`relative border-2 border-dashed rounded-xl p-6 transition-all duration-200 cursor-pointer
+            ${isDragging ? 'border-blue-500 bg-blue-50' : file ? 'border-emerald-400 bg-emerald-50' : 'border-slate-300 hover:border-slate-400 bg-white'}`}
+        >
+          <input
+            type="file"
+            accept={accepted}
+            onChange={handleFileInput}
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+          />
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className={`text-3xl ${file ? 'text-emerald-500' : 'text-slate-400'}`}>
+              {file ? '✓' : icon}
+            </div>
+            <div>
+              <p className="font-semibold text-slate-700">{label}</p>
+              {file ? (
+                <p className="text-sm text-emerald-600 mt-1">{file.name}</p>
+              ) : (
+                <p className="text-sm text-slate-500 mt-1">Drop file or click to browse</p>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const StatCard = ({ label, value, type = 'neutral', subtitle }) => (
+      <div className={`rounded-lg border p-4 ${STATUS_COLORS[type]}`}>
+        <p className="text-2xl font-bold">{value}</p>
+        <p className="font-medium">{label}</p>
+        {subtitle && <p className="text-xs mt-1 opacity-75">{subtitle}</p>}
+      </div>
+    );
+
+    const AuditTable = ({ data, title, columns }) => {
+      const [sortCol, setSortCol] = useState(null);
+      const [sortDir, setSortDir] = useState('asc');
+      const [filter, setFilter] = useState('');
+
+      const sortedData = useMemo(() => {
+        let filtered = data.filter(row => 
+          Object.values(row).some(val => 
+            String(val).toLowerCase().includes(filter.toLowerCase())
+          )
+        );
+        
+        if (sortCol) {
+          filtered.sort((a, b) => {
+            const aVal = a[sortCol] || '';
+            const bVal = b[sortCol] || '';
+            const cmp = String(aVal).localeCompare(String(bVal));
+            return sortDir === 'asc' ? cmp : -cmp;
+          });
+        }
+        return filtered;
+      }, [data, sortCol, sortDir, filter]);
+
+      const handleSort = (col) => {
+        if (sortCol === col) {
+          setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        } else {
+          setSortCol(col);
+          setSortDir('asc');
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="p-4 border-b border-slate-200 flex justify-between items-center flex-wrap gap-3">
+            <h3 className="font-semibold text-slate-800">{title} ({sortedData.length})</h3>
+            <input
+              type="text"
+              placeholder="Filter..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="overflow-x-auto max-h-96">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 sticky top-0">
+                <tr>
+                  {columns.map(col => (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      className="px-4 py-3 text-left font-semibold text-slate-600 cursor-pointer hover:bg-slate-100 whitespace-nowrap"
+                    >
+                      {col.label} {sortCol === col.key && (sortDir === 'asc' ? '↑' : '↓')}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedData.slice(0, 100).map((row, i) => (
+                  <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
+                    {columns.map(col => (
+                      <td key={col.key} className="px-4 py-2.5 whitespace-nowrap">
+                        {col.render ? col.render(row[col.key], row) : row[col.key] || '-'}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {sortedData.length > 100 && (
+              <p className="p-3 text-center text-slate-500 text-sm bg-slate-50">
+                Showing 100 of {sortedData.length} rows
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    function EmployeeAuditApp() {
+      const [files, setFiles] = useState({ ukg: null, slack: null, google: null });
+      const [data, setData] = useState({ ukg: null, slack: null, google: null });
+      const [auditResults, setAuditResults] = useState(null);
+      const [processing, setProcessing] = useState(false);
+      const [activeTab, setActiveTab] = useState('upload');
+
+      const parseFile = (file, type) => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          
+          reader.onload = (e) => {
+            try {
+              const extension = file.name.split('.').pop().toLowerCase();
+              
+              if (extension === 'xlsx' || extension === 'xls') {
+                const workbook = XLSX.read(e.target.result, { type: 'array' });
+                const sheetName = workbook.SheetNames[0];
+                const sheet = workbook.Sheets[sheetName];
+                let jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                
+                if (type === 'ukg' && jsonData[0] && String(jsonData[0][0]).includes('Active Employee')) {
+                  jsonData = jsonData.slice(1);
+                }
+                
+                const headers = jsonData[0];
+                const rows = jsonData.slice(1).map(row => {
+                  const obj = {};
+                  headers.forEach((h, i) => { obj[h] = row[i]; });
+                  return obj;
+                }).filter(row => Object.values(row).some(v => v));
+                
+                resolve(rows);
+              } else {
+                Papa.parse(file, {
+                  header: true,
+                  skipEmptyLines: true,
+                  complete: (results) => resolve(results.data),
+                  error: reject
+                });
+              }
+            } catch (err) {
+              reject(err);
+            }
+          };
+          
+          reader.onerror = reject;
+          
+          if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+            reader.readAsArrayBuffer(file);
+          } else {
+            reader.readAsText(file);
+          }
+        });
+      };
+
+      const handleFileDrop = async (type, file) => {
+        setFiles(prev => ({ ...prev, [type]: file }));
+        
+        try {
+          const parsedData = await parseFile(file, type);
+          setData(prev => ({ ...prev, [type]: parsedData }));
+        } catch (err) {
+          console.error(`Error parsing ${type} file:`, err);
+          alert(`Error parsing ${type} file. Please check the format.`);
+        }
+      };
+
+      const normalizeEmail = (email) => {
+        if (!email) return null;
+        return String(email).trim().toLowerCase();
+      };
+
+      const normalizeName = (first, last) => {
+        const f = first ? String(first).trim().toLowerCase() : '';
+        const l = last ? String(last).trim().toLowerCase() : '';
+        return `${f} ${l}`.trim();
+      };
+
+      const fuzzyMatch = (str1, str2) => {
+        if (!str1 || !str2) return 0;
+        const s1 = str1.toLowerCase();
+        const s2 = str2.toLowerCase();
+        if (s1 === s2) return 100;
+        
+        const longer = s1.length > s2.length ? s1 : s2;
+        const shorter = s1.length > s2.length ? s2 : s1;
+        
+        if (longer.length === 0) return 100;
+        
+        const costs = [];
+        for (let i = 0; i <= s1.length; i++) {
+          let lastValue = i;
+          for (let j = 0; j <= s2.length; j++) {
+            if (i === 0) {
+              costs[j] = j;
+            } else if (j > 0) {
+              let newValue = costs[j - 1];
+              if (s1[i - 1] !== s2[j - 1]) {
+                newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+              }
+              costs[j - 1] = lastValue;
+              lastValue = newValue;
+            }
+          }
+          if (i > 0) costs[s2.length] = lastValue;
+        }
+        
+        return Math.round((1 - costs[s2.length] / longer.length) * 100);
+      };
+
+      const runAudit = () => {
+        if (!data.ukg || !data.slack || !data.google) {
+          alert('Please upload all three files first');
+          return;
+        }
+
+        setProcessing(true);
+
+        setTimeout(() => {
+          try {
+            const ukgData = data.ukg.map(row => ({
+              ...row,
+              firstName: row['First Name'],
+              lastName: row['Last Name'],
+              email: normalizeEmail(row['Employee Email']),
+              fullName: normalizeName(row['First Name'], row['Last Name']),
+              status: row['Employment Status Code'],
+              statusText: { 'A': 'Active', 'T': 'Terminated', 'L': 'Leave' }[row['Employment Status Code']] || row['Employment Status Code']
+            }));
+
+            const googleData = data.google.map(row => ({
+              ...row,
+              firstName: row['First Name [Required]'],
+              lastName: row['Last Name [Required]'],
+              email: normalizeEmail(row['Email Address [Required]']),
+              fullName: normalizeName(row['First Name [Required]'], row['Last Name [Required]']),
+              status: row['Status [READ ONLY]']
+            }));
+
+            const slackData = data.slack
+              .filter(row => {
+                const email = normalizeEmail(row.email);
+                return email && email.includes('@drinkcirkul.com') && row.status !== 'Bot';
+              })
+              .map(row => ({
+                ...row,
+                email: normalizeEmail(row.email),
+                fullName: row.fullname ? String(row.fullname).trim().toLowerCase() : ''
+              }));
+
+            const googleEmails = new Set(googleData.map(r => r.email).filter(Boolean));
+            const slackEmails = new Set(slackData.map(r => r.email).filter(Boolean));
+
+            const auditRecords = [];
+            const matchedGoogleEmails = new Set();
+            const matchedSlackEmails = new Set();
+
+            for (const ukg of ukgData) {
+              let googleMatch = null;
+              let googleStatus = null;
+              let googleMatchType = null;
+              let slackMatch = null;
+              let slackStatus = null;
+              let slackMatchType = null;
+
+              if (ukg.email && googleEmails.has(ukg.email)) {
+                googleMatch = ukg.email;
+                const gRow = googleData.find(g => g.email === ukg.email);
+                googleStatus = gRow?.status;
+                googleMatchType = 'Email';
+                matchedGoogleEmails.add(ukg.email);
+              } else {
+                let bestScore = 0;
+                let bestMatch = null;
+                for (const g of googleData) {
+                  const score = fuzzyMatch(ukg.fullName, g.fullName);
+                  if (score > bestScore && score >= 85) {
+                    bestScore = score;
+                    bestMatch = g;
+                  }
+                }
+                if (bestMatch) {
+                  googleMatch = bestMatch.email;
+                  googleStatus = bestMatch.status;
+                  googleMatchType = `Name (${bestScore}%)`;
+                  matchedGoogleEmails.add(bestMatch.email);
+                }
+              }
+
+              if (ukg.email && slackEmails.has(ukg.email)) {
+                slackMatch = ukg.email;
+                const sRow = slackData.find(s => s.email === ukg.email);
+                slackStatus = sRow?.status;
+                slackMatchType = 'Email';
+                matchedSlackEmails.add(ukg.email);
+              } else {
+                let bestScore = 0;
+                let bestMatch = null;
+                for (const s of slackData) {
+                  const score = fuzzyMatch(ukg.fullName, s.fullName);
+                  if (score > bestScore && score >= 85) {
+                    bestScore = score;
+                    bestMatch = s;
+                  }
+                }
+                if (bestMatch) {
+                  slackMatch = bestMatch.email;
+                  slackStatus = bestMatch.status;
+                  slackMatchType = `Name (${bestScore}%)`;
+                  matchedSlackEmails.add(bestMatch.email);
+                }
+              }
+
+              const flags = [];
+              if (ukg.status === 'T') {
+                if (googleStatus === 'Active') flags.push('TERMINATED - Google Active');
+                if (['Member', 'Admin', 'Primary Owner'].includes(slackStatus)) flags.push('TERMINATED - Slack Active');
+              } else if (ukg.status === 'A') {
+                if (!googleMatch) flags.push('No Google Account');
+                if (!slackMatch) flags.push('No Slack Account');
+                if (googleStatus === 'Suspended') flags.push('Google Suspended');
+                if (slackStatus === 'Deactivated') flags.push('Slack Deactivated');
+              }
+
+              auditRecords.push({
+                firstName: ukg.firstName,
+                lastName: ukg.lastName,
+                ukgEmail: ukg.email || ukg['Employee Email'],
+                ukgStatus: ukg.statusText,
+                location: ukg.Location,
+                job: ukg.Job,
+                terminationDate: ukg['Termination Date'],
+                googleEmail: googleMatch,
+                googleStatus,
+                googleMatchType,
+                slackEmail: slackMatch,
+                slackStatus,
+                slackMatchType,
+                flags: flags.length ? flags.join('; ') : 'OK'
+              });
+            }
+
+            const orphanedGoogle = googleData.filter(g => !matchedGoogleEmails.has(g.email));
+            const orphanedSlack = slackData.filter(s => !matchedSlackEmails.has(s.email));
+
+            const stats = {
+              ukgTotal: ukgData.length,
+              ukgActive: ukgData.filter(r => r.status === 'A').length,
+              ukgTerminated: ukgData.filter(r => r.status === 'T').length,
+              ukgLeave: ukgData.filter(r => r.status === 'L').length,
+              ukgWithEmail: ukgData.filter(r => r.email).length,
+              googleTotal: googleData.length,
+              googleActive: googleData.filter(r => r.status === 'Active').length,
+              googleSuspended: googleData.filter(r => r.status === 'Suspended').length,
+              slackTotal: slackData.length,
+              slackActive: slackData.filter(r => ['Member', 'Admin', 'Primary Owner'].includes(r.status)).length,
+              slackDeactivated: slackData.filter(r => r.status === 'Deactivated').length,
+              terminatedGoogleActive: auditRecords.filter(r => r.flags.includes('TERMINATED - Google Active')).length,
+              terminatedSlackActive: auditRecords.filter(r => r.flags.includes('TERMINATED - Slack Active')).length,
+              activeNoGoogle: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.googleEmail).length,
+              activeNoSlack: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.slackEmail).length,
+              orphanedGoogle: orphanedGoogle.length,
+              orphanedSlack: orphanedSlack.length
+            };
+
+            setAuditResults({ records: auditRecords, orphanedGoogle, orphanedSlack, stats });
+            setActiveTab('results');
+          } catch (err) {
+            console.error('Audit error:', err);
+            alert('Error running audit: ' + err.message);
+          }
+          
+          setProcessing(false);
+        }, 100);
+      };
+
+      const exportToExcel = () => {
+        if (!auditResults) return;
+
+        const wb = XLSX.utils.book_new();
+
+        const auditWs = XLSX.utils.json_to_sheet(auditResults.records.map(r => ({
+          'First Name': r.firstName,
+          'Last Name': r.lastName,
+          'UKG Email': r.ukgEmail,
+          'UKG Status': r.ukgStatus,
+          'Location': r.location,
+          'Job': r.job,
+          'Termination Date': r.terminationDate,
+          'Google Email': r.googleEmail,
+          'Google Status': r.googleStatus,
+          'Google Match Type': r.googleMatchType,
+          'Slack Email': r.slackEmail,
+          'Slack Status': r.slackStatus,
+          'Slack Match Type': r.slackMatchType,
+          'Audit Flags': r.flags
+        })));
+        XLSX.utils.book_append_sheet(wb, auditWs, 'Employee Audit');
+
+        const googleWs = XLSX.utils.json_to_sheet(auditResults.orphanedGoogle.map(r => ({
+          'First Name': r.firstName,
+          'Last Name': r.lastName,
+          'Email': r.email,
+          'Status': r.status
+        })));
+        XLSX.utils.book_append_sheet(wb, googleWs, 'Orphaned Google');
+
+        const slackWs = XLSX.utils.json_to_sheet(auditResults.orphanedSlack.map(r => ({
+          'Full Name': r.fullname,
+          'Email': r.email,
+          'Username': r.username,
+          'Status': r.status
+        })));
+        XLSX.utils.book_append_sheet(wb, slackWs, 'Orphaned Slack');
+
+        const { stats } = auditResults;
+        const summaryData = [
+          { Category: 'UKG Total', Value: stats.ukgTotal },
+          { Category: 'UKG Active', Value: stats.ukgActive },
+          { Category: 'UKG Terminated', Value: stats.ukgTerminated },
+          { Category: 'Google Total', Value: stats.googleTotal },
+          { Category: 'Slack Total (@drinkcirkul.com)', Value: stats.slackTotal },
+          { Category: '---', Value: '---' },
+          { Category: 'TERMINATED with Active Google', Value: stats.terminatedGoogleActive },
+          { Category: 'TERMINATED with Active Slack', Value: stats.terminatedSlackActive },
+          { Category: 'Active without Google', Value: stats.activeNoGoogle },
+          { Category: 'Active without Slack', Value: stats.activeNoSlack },
+          { Category: 'Orphaned Google Accounts', Value: stats.orphanedGoogle },
+          { Category: 'Orphaned Slack Accounts', Value: stats.orphanedSlack }
+        ];
+        const summaryWs = XLSX.utils.json_to_sheet(summaryData);
+        XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+
+        const date = new Date().toISOString().slice(0, 10);
+        XLSX.writeFile(wb, `employee_audit_${date}.xlsx`);
+      };
+
+      const allFilesUploaded = data.ukg && data.slack && data.google;
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+          <div className="max-w-7xl mx-auto p-6">
+            <div className="mb-8">
+              <h1 className="text-3xl font-bold text-slate-800">Employee Audit Tool</h1>
+              <p className="text-slate-600 mt-1">Monthly reconciliation across UKG, Google, and Slack</p>
+            </div>
+
+            <div className="flex gap-2 mb-6">
+              <button
+                onClick={() => setActiveTab('upload')}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  activeTab === 'upload' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
+                }`}
+              >
+                📁 Upload Files
+              </button>
+              <button
+                onClick={() => setActiveTab('results')}
+                disabled={!auditResults}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  activeTab === 'results' 
+                    ? 'bg-blue-600 text-white' 
+                    : auditResults 
+                      ? 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
+                      : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                📊 Results
+              </button>
+            </div>
+
+            {activeTab === 'upload' && (
+              <div className="space-y-6">
+                <div className="grid md:grid-cols-3 gap-4">
+                  <FileDropZone
+                    label="UKG Employee List"
+                    file={files.ukg}
+                    onDrop={(f) => handleFileDrop('ukg', f)}
+                    icon="👥"
+                    accepted=".csv,.xlsx,.xls"
+                  />
+                  <FileDropZone
+                    label="Slack Members"
+                    file={files.slack}
+                    onDrop={(f) => handleFileDrop('slack', f)}
+                    icon="💬"
+                    accepted=".csv"
+                  />
+                  <FileDropZone
+                    label="Google Users"
+                    file={files.google}
+                    onDrop={(f) => handleFileDrop('google', f)}
+                    icon="📧"
+                    accepted=".csv"
+                  />
+                </div>
+
+                {(data.ukg || data.slack || data.google) && (
+                  <div className="bg-white rounded-xl border border-slate-200 p-4">
+                    <h3 className="font-semibold text-slate-700 mb-3">Files Loaded</h3>
+                    <div className="grid md:grid-cols-3 gap-4 text-sm">
+                      {data.ukg && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-emerald-500">✓</span>
+                          <span>UKG: {data.ukg.length} employees</span>
+                        </div>
+                      )}
+                      {data.slack && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-emerald-500">✓</span>
+                          <span>Slack: {data.slack.length} members</span>
+                        </div>
+                      )}
+                      {data.google && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-emerald-500">✓</span>
+                          <span>Google: {data.google.length} users</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={runAudit}
+                  disabled={!allFilesUploaded || processing}
+                  className={`w-full py-4 rounded-xl font-semibold text-lg transition-all ${
+                    allFilesUploaded && !processing
+                      ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-200'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {processing ? '⏳ Processing...' : '🔍 Run Audit'}
+                </button>
+              </div>
+            )}
+
+            {activeTab === 'results' && auditResults && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                  <StatCard 
+                    label="Terminated + Google Active" 
+                    value={auditResults.stats.terminatedGoogleActive} 
+                    type="critical"
+                    subtitle="Security Risk"
+                  />
+                  <StatCard 
+                    label="Terminated + Slack Active" 
+                    value={auditResults.stats.terminatedSlackActive} 
+                    type="critical"
+                    subtitle="Security Risk"
+                  />
+                  <StatCard 
+                    label="Active No Google" 
+                    value={auditResults.stats.activeNoGoogle} 
+                    type="warning"
+                  />
+                  <StatCard 
+                    label="Active No Slack" 
+                    value={auditResults.stats.activeNoSlack} 
+                    type="warning"
+                  />
+                  <StatCard 
+                    label="Orphaned Google" 
+                    value={auditResults.stats.orphanedGoogle} 
+                    type="neutral"
+                  />
+                  <StatCard 
+                    label="Orphaned Slack" 
+                    value={auditResults.stats.orphanedSlack} 
+                    type="neutral"
+                  />
+                </div>
+
+                <button
+                  onClick={exportToExcel}
+                  className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium shadow-lg shadow-emerald-200 transition-colors"
+                >
+                  📥 Export to Excel
+                </button>
+
+                {auditResults.stats.terminatedGoogleActive + auditResults.stats.terminatedSlackActive > 0 && (
+                  <AuditTable
+                    title="🚨 Critical: Terminated with Active Accounts"
+                    data={auditResults.records.filter(r => r.flags.includes('TERMINATED'))}
+                    columns={[
+                      { key: 'firstName', label: 'First Name' },
+                      { key: 'lastName', label: 'Last Name' },
+                      { key: 'ukgStatus', label: 'UKG Status' },
+                      { key: 'terminationDate', label: 'Term Date' },
+                      { key: 'googleEmail', label: 'Google' },
+                      { key: 'googleStatus', label: 'Google Status', render: (v) => (
+                        <span className={v === 'Active' ? 'text-red-600 font-semibold' : ''}>{v}</span>
+                      )},
+                      { key: 'slackStatus', label: 'Slack Status', render: (v) => (
+                        <span className={['Member', 'Admin'].includes(v) ? 'text-red-600 font-semibold' : ''}>{v}</span>
+                      )},
+                      { key: 'flags', label: 'Flags' }
+                    ]}
+                  />
+                )}
+
+                <AuditTable
+                  title="📋 Full Employee Audit"
+                  data={auditResults.records}
+                  columns={[
+                    { key: 'firstName', label: 'First Name' },
+                    { key: 'lastName', label: 'Last Name' },
+                    { key: 'ukgEmail', label: 'UKG Email' },
+                    { key: 'ukgStatus', label: 'Status' },
+                    { key: 'location', label: 'Location' },
+                    { key: 'googleStatus', label: 'Google' },
+                    { key: 'slackStatus', label: 'Slack' },
+                    { key: 'flags', label: 'Flags', render: (v) => (
+                      <span className={
+                        v.includes('TERMINATED') ? 'text-red-600 font-medium' :
+                        v === 'OK' ? 'text-emerald-600' : 'text-amber-600'
+                      }>{v}</span>
+                    )}
+                  ]}
+                />
+
+                {auditResults.orphanedGoogle.length > 0 && (
+                  <AuditTable
+                    title="Google Accounts whose email address is not in UKG"
+                    data={auditResults.orphanedGoogle}
+                    columns={[
+                      { key: 'firstName', label: 'First Name' },
+                      { key: 'lastName', label: 'Last Name' },
+                      { key: 'email', label: 'Email' },
+                      { key: 'status', label: 'Status' }
+                    ]}
+                  />
+                )}
+
+                {auditResults.orphanedSlack.length > 0 && (
+                  <AuditTable
+                    title="Slack Accounts (Not in UKG)"
+                    data={auditResults.orphanedSlack}
+                    columns={[
+                      { key: 'fullname', label: 'Full Name' },
+                      { key: 'email', label: 'Email' },
+                      { key: 'username', label: 'Username' },
+                      { key: 'status', label: 'Status' }
+                    ]}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<EmployeeAuditApp />, document.getElementById('root'));
+  </script>
+</body>
+</html>
