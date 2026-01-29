@@ -16,6 +16,35 @@
   <script type="text/babel">
     const { useState, useCallback, useMemo } = React;
 
+    // Exception list - these accounts are excluded from action items
+    const EXCEPTION_EMAILS = new Set([
+      'steve.battista@drinkcirkul.com',
+      'liliana.barreto@drinkcirkul.com',
+      'nick.lopez@drinkcirkul.com',
+      'latoya.loveless@drinkcirkul.com',
+      'dawil.catano@drinkcirkul.com',
+      'phil@drinkcirkul.com',
+      'chris.daly@drinkcirkul.com',
+      'daniel.gdowski@drinkcirkul.com',
+      'farrah.tabaie@drinkcirkul.com',
+      'jaqueline.fulkerson@drinkcirkul.com',
+      'tony.campos@drinkcirkul.com',
+      'elise.henry@drinkcirkul.com',
+      'isabel.calaba@drinkcirkul.com',
+      'michael.samson@drinkcirkul.com',
+      'rick@drinkcirkul.com',
+      'charles@drinkcirkul.com',
+      'zach.sammartino@drinkcirkul.com'
+    ].map(e => e.toLowerCase()));
+
+    // Check if an account should be in exception list
+    const isException = (email, firstName) => {
+      if (!email && !firstName) return false;
+      const emailLower = email ? email.toLowerCase() : '';
+      const firstNameLower = firstName ? String(firstName).toLowerCase().trim() : '';
+      return EXCEPTION_EMAILS.has(emailLower) || firstNameLower === 'cirkul' || firstNameLower.startsWith('cirkul');
+    };
+
     const STATUS_COLORS = {
       critical: 'bg-red-100 text-red-800 border-red-200',
       warning: 'bg-amber-100 text-amber-800 border-amber-200',
@@ -395,7 +424,13 @@
               }
 
               const flags = [];
-              if (ukg.status === 'T') {
+              const isExceptionRecord = isException(ukg.email, ukg.firstName) || 
+                                        isException(googleMatch, null) || 
+                                        isException(slackMatch, null);
+              
+              if (isExceptionRecord) {
+                flags.push('EXCEPTION');
+              } else if (ukg.status === 'T') {
                 if (googleStatus === 'Active') flags.push('TERMINATED - Google Active');
                 if (['Member', 'Admin', 'Primary Owner'].includes(slackStatus)) flags.push('TERMINATED - Slack Active');
               } else if (ukg.status === 'A') {
@@ -438,12 +473,13 @@
               slackTotal: slackData.length,
               slackActive: slackData.filter(r => ['Member', 'Admin', 'Primary Owner'].includes(r.status)).length,
               slackDeactivated: slackData.filter(r => r.status === 'Deactivated').length,
-              terminatedGoogleActive: auditRecords.filter(r => r.flags.includes('TERMINATED - Google Active')).length,
-              terminatedSlackActive: auditRecords.filter(r => r.flags.includes('TERMINATED - Slack Active')).length,
-              activeNoGoogle: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.googleEmail).length,
-              activeNoSlack: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.slackEmail).length,
+              terminatedGoogleActive: auditRecords.filter(r => r.flags.includes('TERMINATED - Google Active') && !r.flags.includes('EXCEPTION')).length,
+              terminatedSlackActive: auditRecords.filter(r => r.flags.includes('TERMINATED - Slack Active') && !r.flags.includes('EXCEPTION')).length,
+              activeNoGoogle: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.googleEmail && !r.flags.includes('EXCEPTION')).length,
+              activeNoSlack: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.slackEmail && !r.flags.includes('EXCEPTION')).length,
               orphanedGoogle: orphanedGoogle.length,
-              orphanedSlack: orphanedSlack.length
+              orphanedSlack: orphanedSlack.length,
+              exceptions: auditRecords.filter(r => r.flags.includes('EXCEPTION')).length
             };
 
             setAuditResults({ records: auditRecords, orphanedGoogle, orphanedSlack, stats });
@@ -461,6 +497,41 @@
         if (!auditResults) return;
 
         const wb = XLSX.utils.book_new();
+
+        // Critical: Terminated with Active Accounts (FIRST TAB) - excluding exceptions
+        const criticalRecords = auditResults.records.filter(r => r.flags.includes('TERMINATED') && !r.flags.includes('EXCEPTION'));
+        const criticalWs = XLSX.utils.json_to_sheet(criticalRecords.map(r => ({
+          'First Name': r.firstName,
+          'Last Name': r.lastName,
+          'UKG Email': r.ukgEmail,
+          'UKG Status': r.ukgStatus,
+          'Location': r.location,
+          'Job': r.job,
+          'Termination Date': r.terminationDate,
+          'Google Email': r.googleEmail,
+          'Google Status': r.googleStatus,
+          'Slack Email': r.slackEmail,
+          'Slack Status': r.slackStatus,
+          'Audit Flags': r.flags
+        })));
+        XLSX.utils.book_append_sheet(wb, criticalWs, 'CRITICAL - Terminated');
+
+        // Exception List (SECOND TAB)
+        const exceptionRecords = auditResults.records.filter(r => r.flags.includes('EXCEPTION'));
+        const exceptionWs = XLSX.utils.json_to_sheet(exceptionRecords.map(r => ({
+          'First Name': r.firstName,
+          'Last Name': r.lastName,
+          'UKG Email': r.ukgEmail,
+          'UKG Status': r.ukgStatus,
+          'Location': r.location,
+          'Job': r.job,
+          'Termination Date': r.terminationDate,
+          'Google Email': r.googleEmail,
+          'Google Status': r.googleStatus,
+          'Slack Email': r.slackEmail,
+          'Slack Status': r.slackStatus
+        })));
+        XLSX.utils.book_append_sheet(wb, exceptionWs, 'Exception List');
 
         const auditWs = XLSX.utils.json_to_sheet(auditResults.records.map(r => ({
           'First Name': r.firstName,
@@ -508,6 +579,7 @@
           { Category: 'TERMINATED with Active Slack', Value: stats.terminatedSlackActive },
           { Category: 'Active without Google', Value: stats.activeNoGoogle },
           { Category: 'Active without Slack', Value: stats.activeNoSlack },
+          { Category: 'Exception List', Value: stats.exceptions },
           { Category: 'Orphaned Google Accounts', Value: stats.orphanedGoogle },
           { Category: 'Orphaned Slack Accounts', Value: stats.orphanedSlack }
         ];
@@ -655,6 +727,12 @@
                     value={auditResults.stats.orphanedSlack} 
                     type="neutral"
                   />
+                  <StatCard 
+                    label="Exceptions" 
+                    value={auditResults.stats.exceptions} 
+                    type="neutral"
+                    subtitle="Excluded from audit"
+                  />
                 </div>
 
                 <button
@@ -667,7 +745,7 @@
                 {auditResults.stats.terminatedGoogleActive + auditResults.stats.terminatedSlackActive > 0 && (
                   <AuditTable
                     title="🚨 Critical: Terminated with Active Accounts"
-                    data={auditResults.records.filter(r => r.flags.includes('TERMINATED'))}
+                    data={auditResults.records.filter(r => r.flags.includes('TERMINATED') && !r.flags.includes('EXCEPTION'))}
                     columns={[
                       { key: 'firstName', label: 'First Name' },
                       { key: 'lastName', label: 'Last Name' },
@@ -681,6 +759,23 @@
                         <span className={['Member', 'Admin'].includes(v) ? 'text-red-600 font-semibold' : ''}>{v}</span>
                       )},
                       { key: 'flags', label: 'Flags' }
+                    ]}
+                  />
+                )}
+
+                {auditResults.stats.exceptions > 0 && (
+                  <AuditTable
+                    title="📋 Exception List (Excluded from Audit)"
+                    data={auditResults.records.filter(r => r.flags.includes('EXCEPTION'))}
+                    columns={[
+                      { key: 'firstName', label: 'First Name' },
+                      { key: 'lastName', label: 'Last Name' },
+                      { key: 'ukgEmail', label: 'UKG Email' },
+                      { key: 'ukgStatus', label: 'Status' },
+                      { key: 'googleEmail', label: 'Google Email' },
+                      { key: 'googleStatus', label: 'Google Status' },
+                      { key: 'slackEmail', label: 'Slack Email' },
+                      { key: 'slackStatus', label: 'Slack Status' }
                     ]}
                   />
                 )}
@@ -699,6 +794,7 @@
                     { key: 'flags', label: 'Flags', render: (v) => (
                       <span className={
                         v.includes('TERMINATED') ? 'text-red-600 font-medium' :
+                        v.includes('EXCEPTION') ? 'text-blue-600 font-medium' :
                         v === 'OK' ? 'text-emerald-600' : 'text-amber-600'
                       }>{v}</span>
                     )}
@@ -707,7 +803,7 @@
 
                 {auditResults.orphanedGoogle.length > 0 && (
                   <AuditTable
-                    title="Google Accounts whose email address is not in UKG"
+                    title="👻 Orphaned Google Accounts (Not in UKG)"
                     data={auditResults.orphanedGoogle}
                     columns={[
                       { key: 'firstName', label: 'First Name' },
@@ -720,7 +816,7 @@
 
                 {auditResults.orphanedSlack.length > 0 && (
                   <AuditTable
-                    title="Slack Accounts (Not in UKG)"
+                    title="👻 Orphaned Slack Accounts (Not in UKG)"
                     data={auditResults.orphanedSlack}
                     columns={[
                       { key: 'fullname', label: 'Full Name' },
