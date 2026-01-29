@@ -31,18 +31,25 @@
       'tony.campos@drinkcirkul.com',
       'elise.henry@drinkcirkul.com',
       'isabel.calaba@drinkcirkul.com',
-      'michael.samson@drinkcirkul.com',
+      'michael.samson@drinkcirkul.com',    
       'rick@drinkcirkul.com',
       'charles@drinkcirkul.com',
-      'zach.sammartino@drinkcirkul.com'
+      'zach.sammartino@drinkcirkul.com',
+      'sander.sharp@drinkcirkul.com', 
+      
     ].map(e => e.toLowerCase()));
 
-    // Check if an account should be in exception list
-    const isException = (email, firstName) => {
-      if (!email && !firstName) return false;
-      const emailLower = email ? email.toLowerCase() : '';
-      const firstNameLower = firstName ? String(firstName).toLowerCase().trim() : '';
-      return EXCEPTION_EMAILS.has(emailLower) || firstNameLower === 'cirkul' || firstNameLower.startsWith('cirkul');
+    // Check if an account is in the exception list (specific emails only)
+    const isException = (email) => {
+      if (!email) return false;
+      return EXCEPTION_EMAILS.has(email.toLowerCase());
+    };
+
+    // Check if an account is a Team Account (first name starts with "Cirkul")
+    const isTeamAccount = (firstName) => {
+      if (!firstName) return false;
+      const firstNameLower = String(firstName).toLowerCase().trim();
+      return firstNameLower.startsWith('cirkul');
     };
 
     const STATUS_COLORS = {
@@ -424,9 +431,9 @@
               }
 
               const flags = [];
-              const isExceptionRecord = isException(ukg.email, ukg.firstName) || 
-                                        isException(googleMatch, null) || 
-                                        isException(slackMatch, null);
+              const isExceptionRecord = isException(ukg.email) || 
+                                        isException(googleMatch) || 
+                                        isException(slackMatch);
               
               if (isExceptionRecord) {
                 flags.push('EXCEPTION');
@@ -460,6 +467,15 @@
 
             const orphanedGoogle = googleData.filter(g => !matchedGoogleEmails.has(g.email));
             const orphanedSlack = slackData.filter(s => !matchedSlackEmails.has(s.email));
+            
+            // Separate orphaned Google accounts into: Team Accounts (Cirkul), Exceptions, and Real Orphans
+            const teamAccounts = orphanedGoogle.filter(g => isTeamAccount(g.firstName));
+            const orphanedGoogleExceptions = orphanedGoogle.filter(g => !isTeamAccount(g.firstName) && isException(g.email));
+            const orphanedGoogleReal = orphanedGoogle.filter(g => !isTeamAccount(g.firstName) && !isException(g.email));
+            
+            // Separate orphaned Slack accounts into: Exceptions and Real Orphans
+            const orphanedSlackExceptions = orphanedSlack.filter(s => isException(s.email));
+            const orphanedSlackReal = orphanedSlack.filter(s => !isException(s.email));
 
             const stats = {
               ukgTotal: ukgData.length,
@@ -477,12 +493,23 @@
               terminatedSlackActive: auditRecords.filter(r => r.flags.includes('TERMINATED - Slack Active') && !r.flags.includes('EXCEPTION')).length,
               activeNoGoogle: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.googleEmail && !r.flags.includes('EXCEPTION')).length,
               activeNoSlack: auditRecords.filter(r => r.ukgStatus === 'Active' && !r.slackEmail && !r.flags.includes('EXCEPTION')).length,
-              orphanedGoogle: orphanedGoogle.length,
-              orphanedSlack: orphanedSlack.length,
+              orphanedGoogle: orphanedGoogleReal.length,
+              orphanedSlack: orphanedSlackReal.length,
+              orphanedGoogleExceptions: orphanedGoogleExceptions.length,
+              orphanedSlackExceptions: orphanedSlackExceptions.length,
+              teamAccounts: teamAccounts.length,
               exceptions: auditRecords.filter(r => r.flags.includes('EXCEPTION')).length
             };
 
-            setAuditResults({ records: auditRecords, orphanedGoogle, orphanedSlack, stats });
+            setAuditResults({ 
+              records: auditRecords, 
+              orphanedGoogle: orphanedGoogleReal, 
+              orphanedSlack: orphanedSlackReal,
+              orphanedGoogleExceptions,
+              orphanedSlackExceptions,
+              teamAccounts,
+              stats 
+            });
             setActiveTab('results');
           } catch (err) {
             console.error('Audit error:', err);
@@ -516,22 +543,62 @@
         })));
         XLSX.utils.book_append_sheet(wb, criticalWs, 'CRITICAL - Terminated');
 
-        // Exception List (SECOND TAB)
-        const exceptionRecords = auditResults.records.filter(r => r.flags.includes('EXCEPTION'));
-        const exceptionWs = XLSX.utils.json_to_sheet(exceptionRecords.map(r => ({
-          'First Name': r.firstName,
-          'Last Name': r.lastName,
-          'UKG Email': r.ukgEmail,
-          'UKG Status': r.ukgStatus,
-          'Location': r.location,
-          'Job': r.job,
-          'Termination Date': r.terminationDate,
-          'Google Email': r.googleEmail,
-          'Google Status': r.googleStatus,
-          'Slack Email': r.slackEmail,
-          'Slack Status': r.slackStatus
-        })));
+        // Exception List (SECOND TAB) - specific email addresses only
+        const exceptionRecords = [
+          ...auditResults.records.filter(r => r.flags.includes('EXCEPTION')).map(r => ({
+            'First Name': r.firstName,
+            'Last Name': r.lastName,
+            'UKG Email': r.ukgEmail,
+            'UKG Status': r.ukgStatus,
+            'Location': r.location,
+            'Job': r.job,
+            'Termination Date': r.terminationDate,
+            'Google Email': r.googleEmail,
+            'Google Status': r.googleStatus,
+            'Slack Email': r.slackEmail,
+            'Slack Status': r.slackStatus,
+            'Source': 'UKG'
+          })),
+          ...auditResults.orphanedGoogleExceptions.map(g => ({
+            'First Name': g.firstName,
+            'Last Name': g.lastName,
+            'UKG Email': '-',
+            'UKG Status': 'Not in UKG',
+            'Location': '-',
+            'Job': '-',
+            'Termination Date': '-',
+            'Google Email': g.email,
+            'Google Status': g.status,
+            'Slack Email': '-',
+            'Slack Status': '-',
+            'Source': 'Google (Orphaned)'
+          })),
+          ...auditResults.orphanedSlackExceptions.map(s => ({
+            'First Name': s.fullname,
+            'Last Name': '',
+            'UKG Email': '-',
+            'UKG Status': 'Not in UKG',
+            'Location': '-',
+            'Job': '-',
+            'Termination Date': '-',
+            'Google Email': '-',
+            'Google Status': '-',
+            'Slack Email': s.email,
+            'Slack Status': s.status,
+            'Source': 'Slack (Orphaned)'
+          }))
+        ];
+        const exceptionWs = XLSX.utils.json_to_sheet(exceptionRecords);
         XLSX.utils.book_append_sheet(wb, exceptionWs, 'Exception List');
+
+        // Team Accounts (THIRD TAB) - Cirkul shared accounts from Google
+        const teamAccountsWs = XLSX.utils.json_to_sheet(auditResults.teamAccounts.map(g => ({
+          'First Name': g.firstName,
+          'Last Name': g.lastName,
+          'Email': g.email,
+          'Status': g.status
+        })));
+        XLSX.utils.book_append_sheet(wb, teamAccountsWs, 'Team Accounts');
 
         const auditWs = XLSX.utils.json_to_sheet(auditResults.records.map(r => ({
           'First Name': r.firstName,
@@ -579,7 +646,8 @@
           { Category: 'TERMINATED with Active Slack', Value: stats.terminatedSlackActive },
           { Category: 'Active without Google', Value: stats.activeNoGoogle },
           { Category: 'Active without Slack', Value: stats.activeNoSlack },
-          { Category: 'Exception List', Value: stats.exceptions },
+          { Category: 'Exception List', Value: stats.exceptions + auditResults.orphanedGoogleExceptions.length + auditResults.orphanedSlackExceptions.length },
+          { Category: 'Team Accounts (Cirkul)', Value: auditResults.teamAccounts.length },
           { Category: 'Orphaned Google Accounts', Value: stats.orphanedGoogle },
           { Category: 'Orphaned Slack Accounts', Value: stats.orphanedSlack }
         ];
@@ -729,9 +797,15 @@
                   />
                   <StatCard 
                     label="Exceptions" 
-                    value={auditResults.stats.exceptions} 
+                    value={auditResults.stats.exceptions + auditResults.orphanedGoogleExceptions.length + auditResults.orphanedSlackExceptions.length} 
                     type="neutral"
                     subtitle="Excluded from audit"
+                  />
+                  <StatCard 
+                    label="Team Accounts" 
+                    value={auditResults.teamAccounts.length} 
+                    type="neutral"
+                    subtitle="Cirkul shared accounts"
                   />
                 </div>
 
@@ -763,10 +837,32 @@
                   />
                 )}
 
-                {auditResults.stats.exceptions > 0 && (
+                {(auditResults.stats.exceptions > 0 || auditResults.orphanedGoogleExceptions.length > 0 || auditResults.orphanedSlackExceptions.length > 0) && (
                   <AuditTable
                     title="📋 Exception List (Excluded from Audit)"
-                    data={auditResults.records.filter(r => r.flags.includes('EXCEPTION'))}
+                    data={[
+                      ...auditResults.records.filter(r => r.flags.includes('EXCEPTION')),
+                      ...auditResults.orphanedGoogleExceptions.map(g => ({
+                        firstName: g.firstName,
+                        lastName: g.lastName,
+                        ukgEmail: '-',
+                        ukgStatus: 'Not in UKG',
+                        googleEmail: g.email,
+                        googleStatus: g.status,
+                        slackEmail: '-',
+                        slackStatus: '-'
+                      })),
+                      ...auditResults.orphanedSlackExceptions.map(s => ({
+                        firstName: s.fullname,
+                        lastName: '',
+                        ukgEmail: '-',
+                        ukgStatus: 'Not in UKG',
+                        googleEmail: '-',
+                        googleStatus: '-',
+                        slackEmail: s.email,
+                        slackStatus: s.status
+                      }))
+                    ]}
                     columns={[
                       { key: 'firstName', label: 'First Name' },
                       { key: 'lastName', label: 'Last Name' },
@@ -776,6 +872,19 @@
                       { key: 'googleStatus', label: 'Google Status' },
                       { key: 'slackEmail', label: 'Slack Email' },
                       { key: 'slackStatus', label: 'Slack Status' }
+                    ]}
+                  />
+                )}
+
+                {auditResults.teamAccounts.length > 0 && (
+                  <AuditTable
+                    title="🏢 Team Accounts (Cirkul Shared Accounts)"
+                    data={auditResults.teamAccounts}
+                    columns={[
+                      { key: 'firstName', label: 'First Name' },
+                      { key: 'lastName', label: 'Last Name' },
+                      { key: 'email', label: 'Email' },
+                      { key: 'status', label: 'Status' }
                     ]}
                   />
                 )}
