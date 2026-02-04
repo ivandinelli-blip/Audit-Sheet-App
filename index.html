@@ -18,7 +18,7 @@
 
     // Exception list - these accounts are excluded from action items
     const EXCEPTION_EMAILS = new Set([
-      'steve.battista@drinkcirkul.com',
+       'steve.battista@drinkcirkul.com',
       'liliana.barreto@drinkcirkul.com',
       'nick.lopez@drinkcirkul.com',
       'latoya.loveless@drinkcirkul.com',
@@ -36,7 +36,6 @@
       'charles@drinkcirkul.com',
       'zach.sammartino@drinkcirkul.com',
       'sander.sharp@drinkcirkul.com', 
-      
     ].map(e => e.toLowerCase()));
 
     // Check if an account is in the exception list (specific emails only)
@@ -353,7 +352,8 @@
               lastName: row['Last Name [Required]'],
               email: normalizeEmail(row['Email Address [Required]']),
               fullName: normalizeName(row['First Name [Required]'], row['Last Name [Required]']),
-              status: row['Status [READ ONLY]']
+              status: row['Status [READ ONLY]'],
+              lastSignIn: row['Last Sign In [READ ONLY]']
             }));
 
             const slackData = data.slack
@@ -591,12 +591,18 @@
         const exceptionWs = XLSX.utils.json_to_sheet(exceptionRecords);
         XLSX.utils.book_append_sheet(wb, exceptionWs, 'Exception List');
 
-        // Team Accounts (THIRD TAB) - Cirkul shared accounts from Google
-        const teamAccountsWs = XLSX.utils.json_to_sheet(auditResults.teamAccounts.map(g => ({
+        // Team Accounts (THIRD TAB) - Cirkul shared accounts from Google, sorted by oldest login first
+        const sortedTeamAccounts = [...auditResults.teamAccounts].sort((a, b) => {
+          const dateA = a.lastSignIn ? new Date(a.lastSignIn) : new Date(0);
+          const dateB = b.lastSignIn ? new Date(b.lastSignIn) : new Date(0);
+          return dateA - dateB;
+        });
+        const teamAccountsWs = XLSX.utils.json_to_sheet(sortedTeamAccounts.map(g => ({
           'First Name': g.firstName,
           'Last Name': g.lastName,
           'Email': g.email,
-          'Status': g.status
+          'Status': g.status,
+          'Last Login': g.lastSignIn || '-'
         })));
         XLSX.utils.book_append_sheet(wb, teamAccountsWs, 'Team Accounts');
 
@@ -879,12 +885,17 @@
                 {auditResults.teamAccounts.length > 0 && (
                   <AuditTable
                     title="🏢 Team Accounts (Cirkul Shared Accounts)"
-                    data={auditResults.teamAccounts}
+                    data={[...auditResults.teamAccounts].sort((a, b) => {
+                      const dateA = a.lastSignIn ? new Date(a.lastSignIn) : new Date(0);
+                      const dateB = b.lastSignIn ? new Date(b.lastSignIn) : new Date(0);
+                      return dateA - dateB;
+                    })}
                     columns={[
                       { key: 'firstName', label: 'First Name' },
                       { key: 'lastName', label: 'Last Name' },
                       { key: 'email', label: 'Email' },
-                      { key: 'status', label: 'Status' }
+                      { key: 'status', label: 'Status' },
+                      { key: 'lastSignIn', label: 'Last Login' }
                     ]}
                   />
                 )}
